@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Geofence App</title>
+      <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" crossorigin=""/>
+      <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" crossorigin=""/>
+      <style>
+        #map {
+          height: 100vh;
+        }
+        .controls {
+          position: absolute;
+          top: 10px;
+          left: 10px;
+          background: white;
+          padding: 10px;
+          border-radius: 5px;
+          box-shadow: 0 0 5px rgba(0,0,0,0.3);
+          z-index: 1000;
+        }
+      </style>
+    </head>
+    <body>
+      <div id="map"></div>
+      <div class="controls">
+        <button id="save">Save Geofence</button>
+        <button id="edit">Edit Geofence</button>
+        <button id="delete">Delete Geofence</button>
+        <div id="info"></div>
+      </div>
+      <script type="module" src="/src/main.js"></script>
+    </body>
+    </html>
