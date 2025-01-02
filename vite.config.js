@@ -1,8 +1,17 @@
-import { defineConfig } from 'vite';
-
-    export default defineConfig({
-      server: {
-        host: process.env.HOST || 'localhost',
-        port: parseInt(process.env.PORT, 10) || 3000
-      }
-    });
+// vite.config.js
+export default {
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3010', // Backend
+        changeOrigin: true,
+        secure: false,
+      },
+      '/auth': {
+        target: 'http://localhost:3010',
+        changeOrigin: true,
+        secure: false,
+      },
+    },
+  },
+};
