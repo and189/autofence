@@ -1,35 +1,246 @@
 <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Geofence App</title>
-      <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" crossorigin=""/>
-      <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" crossorigin=""/>
-      <style>
-        #map {
-          height: 100vh;
-        }
-        .controls {
-          position: absolute;
-          top: 10px;
-          left: 10px;
-          background: white;
-          padding: 10px;
-          border-radius: 5px;
-          box-shadow: 0 0 5px rgba(0,0,0,0.3);
-          z-index: 1000;
-        }
-      </style>
-    </head>
-    <body>
-      <div id="map"></div>
-      <div class="controls">
-        <button id="save">Save Geofence</button>
-        <button id="edit">Edit Geofence</button>
-        <button id="delete">Delete Geofence</button>
-        <div id="info"></div>
-      </div>
-      <script type="module" src="/src/main.js"></script>
-    </body>
-    </html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Leaflet Karte mit Ladeindikator</title>
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <!-- Leaflet Draw CSS -->
+  <link
+    rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"
+  />
+  <style>
+    /* Grundlegende Stile */
+    body,
+    html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: Arial, sans-serif;
+    }
+
+    /* Karte */
+    #map {
+      height: 80vh;
+      width: 100%;
+    }
+
+    /* CSS für das Lade-Overlay */
+    #loadingOverlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(255, 255, 255, 0.8);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      flex-direction: column;
+    }
+    #loadingOverlay .loader {
+      border: 12px solid #f3f3f3;
+      border-top: 12px solid #3498db;
+      border-radius: 50%;
+      width: 60px;
+      height: 60px;
+      animation: spin 2s linear infinite;
+    }
+    #loadingOverlay p {
+      margin-top: 15px;
+      font-size: 1em;
+      color: #3498db;
+    }
+    @keyframes spin {
+      0% {
+        transform: rotate(0deg);
+      }
+      100% {
+        transform: rotate(360deg);
+      }
+    }
+
+    /* Container für die Zeichen-Buttons, Schrittanzahl und letzte Aktion */
+    #controlContainer {
+      padding: 10px;
+      background-color: #f9f9f9;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      flex-wrap: wrap;
+    }
+    #controlContainer button {
+      padding: 10px 20px;
+      font-size: 1em;
+      cursor: pointer;
+      border: none;
+      border-radius: 5px;
+      background-color: #4caf50;
+      color: white;
+      transition: background-color 0.3s ease;
+      margin: 5px;
+      flex: 1 1 45%; /* Flexibilität für verschiedene Bildschirmgrößen */
+      max-width: 200px;
+    }
+    #controlContainer button:hover {
+      background-color: #45a049;
+    }
+
+    /* Countdown-Anzeige */
+    #timerDiv {
+      display: none;
+      font-size: 1em;
+      margin-top: 10px;
+      font-weight: bold;
+      width: 100%;
+      text-align: center;
+      color: #e74c3c;
+    }
+
+    /* Anzeige der letzten Aktion */
+    #lastAction {
+      font-size: 1em;
+      font-weight: bold;
+      margin-top: 10px;
+      width: 100%;
+      text-align: center;
+      color: #2c3e50;
+    }
+
+    /* Modal-Styles */
+    #nameModal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0,0,0,0.5);
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+    }
+    #nameModal .modal-content {
+      background-color: white;
+      padding: 20px;
+      border-radius: 5px;
+      width: 90%;
+      max-width: 400px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+    }
+    #nameModal h3 {
+      margin-top: 0;
+      text-align: center;
+    }
+    #nameModal input {
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 15px;
+      box-sizing: border-box;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    #nameModal button {
+      padding: 10px 20px;
+      margin: 5px 0;
+      cursor: pointer;
+      border: none;
+      border-radius: 4px;
+      width: 48%;
+      font-size: 1em;
+    }
+    #saveNameButton {
+      background-color: #4caf50;
+      color: white;
+    }
+    #cancelNameButton {
+      background-color: #f44336;
+      color: white;
+    }
+    #saveNameButton:hover {
+      background-color: #45a049;
+    }
+    #cancelNameButton:hover {
+      background-color: #d32f2f;
+    }
+
+    /* Styles für die Fence-Tooltips */
+    .fence-tooltip {
+      background-color: rgba(255, 255, 255, 0.8);
+      border: 1px solid #333;
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-size: 12px;
+      color: #333;
+    }
+
+    /* Responsive Anpassungen */
+    @media (max-width: 600px) {
+      #controlContainer {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      #controlContainer button {
+        flex: 1 1 100%;
+        max-width: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Container für Zeichnen-Buttons, Schrittanzahl und letztes Sync -->
+  <div id="controlContainer">
+    <button id="drawFence" class="draw-button">Fence zeichnen</button>
+    <button id="drawBootstrapFence" class="draw-button">Bootstrap Fence zeichnen</button>
+
+    <!-- Entfernte Sync-Buttons -->
+
+    <div id="stepCount">Schritte: 0</div>
+    <div id="timerDiv"></div>
+    <!-- Letzte Aktion -->
+    <div id="lastAction">Letzte Aktion: <span id="lastActionSpan">Keine Aktion bisher</span></div>
+  </div>
+
+  <div id="map"></div>
+
+  <div id="loadingOverlay">
+    <div class="loader"></div>
+    <p>Daten werden geladen...</p>
+  </div>
+
+  <!-- Modal für Fence-Namen -->
+  <div id="nameModal">
+    <div class="modal-content">
+      <h3>Fence Name</h3>
+      <input type="text" id="fenceNameInput" placeholder="Geben Sie einen Namen ein" />
+      <button id="saveNameButton">Speichern</button>
+      <button id="cancelNameButton">Abbrechen</button>
+    </div>
+  </div>
+
+  <!-- Leaflet JavaScript -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Leaflet Draw JavaScript -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+  <!-- Patch für Leaflet.draw Deprecation Warning -->
+  <script>
+    // Fix für die veraltete Verwendung von _flat in Leaflet.draw
+    if (typeof L.LineUtil._flat === 'undefined') {
+      L.LineUtil._flat = L.LineUtil.isFlat;
+      console.warn("Patched L.LineUtil._flat to use L.LineUtil.isFlat for Leaflet.draw compatibility.");
+    }
+  </script>
+  <!-- Turf.js -->
+  <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+  <!-- Leaflet GeometryUtil -->
+  <script
+    src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.geometryutil/0.9.3/leaflet.geometryutil.min.js"
+  ></script>
+  <!-- Haupt-JavaScript-Datei -->
+  <script src="/src/main.js"></script>
+</body>
+</html>
