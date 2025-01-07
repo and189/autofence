@@ -45,7 +45,7 @@ const geofenceDbPool = mysql.createPool(geofenceDbConfig);
 // Middleware
 app.use(
   cors({
-    origin: 'http://0.0.0.0:3005', // Die URL deines Frontends
+    origin: 'http://0.0.0.0:3005',
     credentials: true,
   })
 );
@@ -61,7 +61,7 @@ app.use(
     cookie: {
       secure: false,
       httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000, // 1 Tag
+      maxAge: 24 * 60 * 60 * 1000,
     },
   })
 );
@@ -87,22 +87,17 @@ passport.use(
     async (accessToken, refreshToken, profile, done) => {
       try {
         const { id, username, email } = profile;
-
-        // Überprüfen, ob der Benutzer in der Datenbank ist
         const [rows] = await fencesDbPool.execute(
           'SELECT id FROM users WHERE discord_id = ?',
           [id]
         );
-
         if (rows.length === 0) {
-          // Benutzer in die Datenbank einfügen, falls er nicht existiert
           const [result] = await fencesDbPool.execute(
-            'INSERT INTO users (discord_id, username, email, max_fences) VALUES (?, ?, ?, ?) ',
-            [id, username, email, 1] // Setze die maximale Anzahl an Fences hier
+            'INSERT INTO users (discord_id, username, email, max_fences) VALUES (?, ?, ?, ?)',
+            [id, username, email, 1]
           );
           console.log(`Neuer Benutzer angelegt mit ID: ${result.insertId}`);
         }
-
         done(null, profile);
       } catch (err) {
         console.error('Fehler bei der Benutzerregistrierung:', err);
@@ -123,11 +118,10 @@ app.get(
   '/auth/discord/callback',
   passport.authenticate('discord', { failureRedirect: '/' }),
   (req, res) => {
-    res.redirect('http://164.68.105.51:3005'); // Weiterleitung zur Karte
+    res.redirect('http://164.68.105.51:3005');
   }
 );
 
-// **Benutzer-API mit last_sync_action und max_fences**
 app.get('/api/user', async (req, res) => {
   if (req.isAuthenticated()) {
     try {
@@ -139,9 +133,17 @@ app.get('/api/user', async (req, res) => {
       if (rows.length > 0) {
         const lastSyncAction = rows[0].last_sync_action;
         const maxFences = rows[0].max_fences;
-        res.json({ user: req.user, last_sync_action: lastSyncAction, max_fences: maxFences });
+        res.json({
+          user: req.user,
+          last_sync_action: lastSyncAction,
+          max_fences: maxFences,
+        });
       } else {
-        res.json({ user: req.user, last_sync_action: null, max_fences: 1 }); // Standardwert 1, falls nicht gesetzt
+        res.json({
+          user: req.user,
+          last_sync_action: null,
+          max_fences: 1,
+        });
       }
     } catch (error) {
       console.error('Fehler beim Abrufen von last_sync_action und max_fences:', error);
@@ -152,18 +154,16 @@ app.get('/api/user', async (req, res) => {
   }
 });
 
-// **API-Route: /api/fences zum Abrufen aller eigenen Fences**
+// Fences abrufen
 app.get('/api/fences', async (req, res) => {
   if (!req.isAuthenticated()) {
-    return res
-      .status(401)
-      .json({ error: 'Benutzer nicht authentifiziert. Bitte anmelden.' });
+    return res.status(401).json({
+      error: 'Benutzer nicht authentifiziert. Bitte anmelden.',
+    });
   }
 
   try {
-    const discordId = req.user.id; // Discord-ID des Benutzers
-
-    // Hole die Benutzer-ID des aktuellen Benutzers
+    const discordId = req.user.id;
     const [userRows] = await fencesDbPool.execute(
       'SELECT id FROM users WHERE discord_id = ?',
       [discordId]
@@ -172,45 +172,35 @@ app.get('/api/fences', async (req, res) => {
       return res.status(404).json({ error: 'Benutzer nicht gefunden.' });
     }
     const userId = userRows[0].id;
-
-    // Hole die Projekt-ID des Benutzers (angenommen, es gibt ein Projekt pro Benutzer)
     const [projectRows] = await geofenceDbPool.execute(
       'SELECT id FROM project WHERE name = ?',
       [discordId.toString()]
     );
-
     let userProjectId;
     if (projectRows.length > 0) {
       userProjectId = projectRows[0].id;
     } else {
-      // Falls kein Projekt existiert, erstelle eines
       const [projectResult] = await geofenceDbPool.execute(
         `INSERT INTO project (name, created_at, updated_at, api_endpoint, api_key, scanner, description)
-            VALUES (?, NOW(), NOW(), NULL, NULL, 0, 'Auto-generated for Discord user')`,
+         VALUES (?, NOW(), NOW(), NULL, NULL, 0, 'Auto-generated for Discord user')`,
         [discordId.toString()]
       );
       userProjectId = projectResult.insertId;
       console.log(`Neues Projekt für Benutzer erstellt mit ID: ${userProjectId}`);
     }
-
-    // Hole die Fences, die zum Benutzerprojekt gehören
     const [fenceRows] = await geofenceDbPool.execute(
-      `SELECT g.id, g.geometry, g.name 
-         FROM geofence g 
-         JOIN geofence_project gp ON g.id = gp.geofence_id 
-         WHERE gp.project_id = ?`,
+      `SELECT g.id, g.geometry, g.name
+       FROM geofence g
+       JOIN geofence_project gp ON g.id = gp.geofence_id
+       WHERE gp.project_id = ?`,
       [userProjectId]
     );
-
-    // Füge die Fences in das Format für das Frontend
     const fencesWithOwnership = fenceRows.map((fence) => ({
       id: fence.id,
       geometry: JSON.parse(fence.geometry),
       name: fence.name,
-      isOwnFence: true, // Da wir nur die eigenen Fences abrufen
+      isOwnFence: true,
     }));
-
-    console.log(`Alle eigenen Fences: ${JSON.stringify(fencesWithOwnership)}`);
     res.json(fencesWithOwnership);
   } catch (error) {
     console.error('Fehler beim Abrufen der Fences:', error);
@@ -218,38 +208,32 @@ app.get('/api/fences', async (req, res) => {
   }
 });
 
-// **API-Route: /api/fences/count zum Zählen der Fences**
+// Fences zählen
 app.get('/api/fences/count', async (req, res) => {
   if (!req.isAuthenticated()) {
-    return res
-      .status(401)
-      .json({ error: 'Benutzer nicht authentifiziert. Bitte anmelden.' });
+    return res.status(401).json({
+      error: 'Benutzer nicht authentifiziert. Bitte anmelden.',
+    });
   }
 
   try {
     const discordId = req.user.id;
-
-    // Hole die Benutzer-ID des aktuellen Benutzers
     const [userRows] = await fencesDbPool.execute(
       'SELECT id FROM users WHERE discord_id = ?',
       [discordId]
     );
-
     if (userRows.length === 0) {
       return res.status(404).json({ error: 'Benutzer nicht gefunden.' });
     }
     const userId = userRows[0].id;
-
-    // Zähle die Anzahl der Fences des Benutzers
     const [countRows] = await geofenceDbPool.execute(
       `SELECT COUNT(*) AS count
-         FROM geofence g
-         JOIN geofence_project gp ON g.id = gp.geofence_id
-         JOIN project p ON gp.project_id = p.id
-         WHERE p.name = ?`,
+       FROM geofence g
+       JOIN geofence_project gp ON g.id = gp.geofence_id
+       JOIN project p ON gp.project_id = p.id
+       WHERE p.name = ?`,
       [discordId.toString()]
     );
-
     const fenceCount = countRows[0].count;
     res.json({ count: fenceCount });
   } catch (error) {
@@ -258,43 +242,34 @@ app.get('/api/fences/count', async (req, res) => {
   }
 });
 
-// **API-Route: /api/fences/by-project/:projectId zum Abrufen aller Fences eines bestimmten Projekts**
+// Fences eines Projekts abrufen
 app.get('/api/fences/by-project/:projectId', async (req, res) => {
   if (!req.isAuthenticated()) {
-    return res
-      .status(401)
-      .json({ error: 'Benutzer nicht authentifiziert. Bitte anmelden.' });
+    return res.status(401).json({
+      error: 'Benutzer nicht authentifiziert. Bitte anmelden.',
+    });
   }
-
   const { projectId } = req.params;
-
   try {
-    // Validierung der projectId
     const parsedProjectId = parseInt(projectId, 10);
     if (isNaN(parsedProjectId)) {
       return res.status(400).json({ error: 'Ungültige Projekt-ID.' });
     }
-
-    // Hole die Fences, die zum angegebenen Projekt gehören
     const [fenceRows] = await geofenceDbPool.execute(
       `SELECT g.id, g.geometry, g.name, p.name AS ownerDiscordId
-         FROM geofence g
-         JOIN geofence_project gp ON g.id = gp.geofence_id
-         JOIN project p ON gp.project_id = p.id
-         WHERE p.id = ?`,
+       FROM geofence g
+       JOIN geofence_project gp ON g.id = gp.geofence_id
+       JOIN project p ON gp.project_id = p.id
+       WHERE p.id = ?`,
       [parsedProjectId]
     );
-
-    // Füge die Fences in das Format für das Frontend
     const fences = fenceRows.map((fence) => ({
       id: fence.id,
       geometry: JSON.parse(fence.geometry),
       name: fence.name,
       ownerDiscordId: fence.ownerDiscordId,
-      isOwnFence: fence.ownerDiscordId === req.user.id, // Prüfen, ob die Fence dem aktuellen Benutzer gehört
+      isOwnFence: fence.ownerDiscordId === req.user.id,
     }));
-
-    console.log(`Fences für Projekt ${projectId}: ${JSON.stringify(fences)}`);
     res.json(fences);
   } catch (error) {
     console.error('Fehler beim Abrufen der Fences für Projekt:', error);
@@ -302,49 +277,39 @@ app.get('/api/fences/by-project/:projectId', async (req, res) => {
   }
 });
 
-// **API-Route: /api/fences/:id zum Abrufen einer einzelnen Fence**
+// Einzelne Fence abrufen
 app.get('/api/fences/:id', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({ error: 'Benutzer nicht authentifiziert.' });
   }
-
   const fenceId = req.params.id;
-
   try {
     const discordId = req.user.id;
-
-    // Hole die Benutzer-ID
     const [userRows] = await fencesDbPool.execute(
       'SELECT id FROM users WHERE discord_id = ?',
       [discordId]
     );
-
     if (userRows.length === 0) {
       return res.status(404).json({ error: 'Benutzer nicht gefunden.' });
     }
-
     const userId = userRows[0].id;
-
-    // Hole die Fence-Daten, stelle sicher, dass die Fence dem Benutzer gehört
     const [fenceRows] = await geofenceDbPool.execute(
-      `SELECT g.id, g.geometry, g.name 
-         FROM geofence g
-         JOIN geofence_project gp ON g.id = gp.geofence_id
-         JOIN project p ON gp.project_id = p.id
-         WHERE g.id = ? AND p.name = ?`,
+      `SELECT g.id, g.geometry, g.name
+       FROM geofence g
+       JOIN geofence_project gp ON g.id = gp.geofence_id
+       JOIN project p ON gp.project_id = p.id
+       WHERE g.id = ? AND p.name = ?`,
       [fenceId, discordId.toString()]
     );
-
     if (fenceRows.length === 0) {
       return res
         .status(404)
         .json({ error: 'Fence nicht gefunden oder gehört nicht dem Benutzer.' });
     }
-
     const fence = fenceRows[0];
     res.json({
       id: fence.id,
-      geometry: fence.geometry, // Stelle sicher, dass das Format konsistent ist
+      geometry: fence.geometry,
       name: fence.name,
     });
   } catch (error) {
@@ -353,181 +318,142 @@ app.get('/api/fences/:id', async (req, res) => {
   }
 });
 
-// **API-Route: /api/fences zum Erstellen einer neuen Fence**
+// Neue Fence erstellen
 app.post('/api/fences', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({ error: 'Benutzer nicht authentifiziert.' });
   }
-
   const discordId = req.user.id;
   const { geojson, name } = req.body;
-
   if (!geojson) {
     return res.status(400).json({ error: 'GeoJSON-Daten werden benötigt.' });
   }
-
   if (!name || typeof name !== 'string' || name.trim() === '') {
     return res.status(400).json({ error: 'Ein gültiger Name ist erforderlich.' });
   }
-
   try {
-    // Überprüfen, ob der Benutzer in der Datenbank ist
     const [userRows] = await fencesDbPool.execute(
       'SELECT id, max_fences FROM users WHERE discord_id = ?',
       [discordId]
     );
-
     if (userRows.length === 0) {
       return res.status(404).json({ error: 'Benutzer nicht gefunden.' });
     }
-
     const userId = userRows[0].id;
-    const maxFences = userRows[0].max_fences; // Nutze den Wert der max_fences-Spalte
-
-    // Überprüfen der Anzahl der vorhandenen Fences
+    const maxFences = userRows[0].max_fences;
     const [countRows] = await geofenceDbPool.execute(
       `SELECT COUNT(*) AS count
-         FROM geofence g
-         JOIN geofence_project gp ON g.id = gp.geofence_id
-         JOIN project p ON gp.project_id = p.id
-         WHERE p.name = ?`,
+       FROM geofence g
+       JOIN geofence_project gp ON g.id = gp.geofence_id
+       JOIN project p ON gp.project_id = p.id
+       WHERE p.name = ?`,
       [discordId.toString()]
     );
-
     const fenceCount = countRows[0].count;
-
     if (fenceCount >= maxFences) {
-      return res.status(400).json({ error: `Maximale Anzahl von ${maxFences} Fences erreicht.` });
+      return res
+        .status(400)
+        .json({ error: `Maximale Anzahl von ${maxFences} Fences erreicht.` });
     }
-
-    // Hole oder erstelle das Benutzerprojekt
     const [projectRows] = await geofenceDbPool.execute(
       'SELECT id FROM project WHERE name = ?',
       [discordId.toString()]
     );
-
     let userProjectId;
     if (projectRows.length > 0) {
       userProjectId = projectRows[0].id;
     } else {
       const [projectResult] = await geofenceDbPool.execute(
         `INSERT INTO project (name, created_at, updated_at, api_endpoint, api_key, scanner, description)
-            VALUES (?, NOW(), NOW(), NULL, NULL, 0, 'Auto-generated for Discord user')`,
+         VALUES (?, NOW(), NOW(), NULL, NULL, 0, 'Auto-generated for Discord user')`,
         [discordId.toString()]
       );
       userProjectId = projectResult.insertId;
       console.log(`Neues Projekt für Benutzer erstellt mit ID: ${userProjectId}`);
     }
-
-    // Umwandlung der Geometrie in das gewünschte Format
     const formattedGeoJSON = {
       type: 'Polygon',
       coordinates: geojson.geometry.coordinates,
     };
-
-    // Speichern der neuen Geofence
     const [result] = await geofenceDbPool.execute(
       `INSERT INTO geofence (name, created_at, updated_at, mode, geometry, parent)
-          VALUES (?, NOW(), NOW(), 'auto_pokemon', ?, NULL)`,
+       VALUES (?, NOW(), NOW(), 'auto_pokemon', ?, NULL)`,
       [name, JSON.stringify(formattedGeoJSON)]
     );
-
     const geofenceId = result.insertId;
-
-    // Projekt zuordnen (das erstellte Benutzerprojekt)
     await geofenceDbPool.execute(
       `INSERT INTO geofence_project (geofence_id, project_id)
-          VALUES (?, ?)`,
+       VALUES (?, ?)`,
       [geofenceId, userProjectId]
     );
-
-    // Füge die Standardprojekte (14, 23, 26) hinzu
-    const standardProjectIds = [14, 23, 26]; // Anpassen der IDs falls notwendig
-
+    const standardProjectIds = [14, 23, 26];
     for (const projectId of standardProjectIds) {
       await geofenceDbPool.execute(
         `INSERT INTO geofence_project (geofence_id, project_id)
-            VALUES (?, ?)
-            ON DUPLICATE KEY UPDATE project_id = project_id`, // Auf Duplikate absichern
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE project_id = project_id`,
         [geofenceId, projectId]
       );
     }
-
-    // **Neuer Code: Einfügen in geofence_property**
     await geofenceDbPool.execute(
       `INSERT INTO geofence_property (geofence_id, property_id, value)
-          VALUES (?, 21, ?)`,
+       VALUES (?, 21, ?)`,
       [geofenceId, name]
     );
-
-    console.log(`Neue Fence mit ID ${geofenceId} für Benutzer erstellt.`);
     res.json({ success: true, fenceId: geofenceId });
   } catch (error) {
     console.error('Fehler beim Speichern der Fence:', error);
-    res.status(500).json({ error: 'Fehler beim Speichern der Fence', details: error.message });
+    res
+      .status(500)
+      .json({ error: 'Fehler beim Speichern der Fence', details: error.message });
   }
 });
 
-// **API-Route: /api/fences/:id zum Aktualisieren einer bestehenden Fence**
+// Fence aktualisieren
 app.put('/api/fences/:id', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({ error: 'Benutzer nicht authentifiziert.' });
   }
-
   const discordId = req.user.id;
   const fenceId = req.params.id;
   const { geojson, name } = req.body;
-
   if (!geojson && !name) {
-    return res
-      .status(400)
-      .json({ error: 'Mindestens ein Feld (geojson oder name) ist erforderlich.' });
+    return res.status(400).json({
+      error: 'Mindestens ein Feld (geojson oder name) ist erforderlich.',
+    });
   }
-
   try {
     const [userRows] = await fencesDbPool.execute(
       'SELECT id FROM users WHERE discord_id = ?',
       [discordId]
     );
-
     if (userRows.length === 0) {
       return res.status(404).json({ error: 'Benutzer nicht gefunden.' });
     }
-
-    const userId = userRows[0].id;
-
-    // Hole das Benutzerprojekt
-    const [projectRows] = await geofenceDbPool.execute(
+    const userProjectIdQuery = await geofenceDbPool.execute(
       'SELECT id FROM project WHERE name = ?',
       [discordId.toString()]
     );
-
-    if (projectRows.length === 0) {
-      return res.status(404).json({ error: 'Benutzerprojekt nicht gefunden.' });
-    }
-
-    const userProjectId = projectRows[0].id;
-
-    // Überprüfe, ob die Fence dem Benutzer gehört
-    const [fenceRows] = await geofenceDbPool.execute(
-      `SELECT g.id FROM geofence g
-         JOIN geofence_project gp ON g.id = gp.geofence_id
-         WHERE g.id = ? AND gp.project_id = ?`,
-      [fenceId, userProjectId]
-    );
-
-    if (fenceRows.length === 0) {
+    if (userProjectIdQuery[0].length === 0) {
       return res
         .status(404)
-        .json({ error: 'Fence nicht gefunden oder gehört nicht dem Benutzer.' });
+        .json({ error: 'Benutzerprojekt nicht gefunden.' });
     }
-
-    // Aktualisiere das Geofence in der Geofence-Datenbank
+    const userProjectId = userProjectIdQuery[0][0].id;
+    const [fenceRows] = await geofenceDbPool.execute(
+      `SELECT g.id FROM geofence g
+       JOIN geofence_project gp ON g.id = gp.geofence_id
+       WHERE g.id = ? AND gp.project_id = ?`,
+      [fenceId, userProjectId]
+    );
+    if (fenceRows.length === 0) {
+      return res.status(404).json({
+        error: 'Fence nicht gefunden oder gehört nicht dem Benutzer.',
+      });
+    }
     const fields = [];
     const values = [];
-
     if (geojson) {
-      // Extrahiere nur die Geometrie und stelle sicher, dass der Typ "Polygon" ist
       const formattedGeoJSON = {
         type: 'Polygon',
         coordinates: geojson.geometry.coordinates,
@@ -535,40 +461,30 @@ app.put('/api/fences/:id', async (req, res) => {
       fields.push('geometry = ?');
       values.push(JSON.stringify(formattedGeoJSON));
     }
-
     if (name) {
       fields.push('name = ?');
       values.push(name);
     }
-
     values.push(fenceId);
-
     const updateQuery = `UPDATE geofence SET ${fields.join(', ')} WHERE id = ?`;
     await geofenceDbPool.execute(updateQuery, values);
-
-    // Aktualisiere geofence_property, falls der Name geändert wurde
     if (name) {
-      // Überprüfe, ob bereits ein Eintrag existiert
       const [existingPropertyRows] = await geofenceDbPool.execute(
         'SELECT * FROM geofence_property WHERE geofence_id = ? AND property_id = 21',
         [fenceId]
       );
-
       if (existingPropertyRows.length > 0) {
-        // Eintrag existiert, führe ein UPDATE durch
         await geofenceDbPool.execute(
           'UPDATE geofence_property SET value = ? WHERE geofence_id = ? AND property_id = 21',
           [name, fenceId]
         );
       } else {
-        // Eintrag existiert nicht, füge ihn ein
         await geofenceDbPool.execute(
           'INSERT INTO geofence_property (geofence_id, property_id, value) VALUES (?, 21, ?)',
           [fenceId, name]
         );
       }
     }
-    console.log(`Fence mit ID ${fenceId} aktualisiert.`);
     res.json({ success: true });
   } catch (error) {
     console.error('Fehler beim Aktualisieren der Fence:', error);
@@ -576,16 +492,14 @@ app.put('/api/fences/:id', async (req, res) => {
   }
 });
 
-// **API-Route: /api/spawnpoints**
+// Spawnpoints
 app.get('/api/spawnpoints', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res
       .status(401)
       .json({ error: 'Benutzer nicht authentifiziert. Bitte anmelden.' });
   }
-
   const { north, south, east, west } = req.query;
-
   if (
     !north ||
     !south ||
@@ -600,9 +514,7 @@ app.get('/api/spawnpoints', async (req, res) => {
       .status(400)
       .json({ error: 'Ungültige Eingabe. Alle Werte müssen Zahlen sein.' });
   }
-
   const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
-
   try {
     const [rows] = await golbatDbPool.execute(
       'SELECT id, lat, lon FROM spawnpoint WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ? AND last_seen >= ?',
@@ -615,17 +527,15 @@ app.get('/api/spawnpoints', async (req, res) => {
   }
 });
 
-// **API-Route: /api/bootstrap zum Abrufen des Bootstrap-Fence und Route**
+// Bootstrap abrufen
 app.get('/api/bootstrap', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res
       .status(401)
       .json({ error: 'Benutzer nicht authentifiziert. Bitte anmelden.' });
   }
-
   try {
-    const discordId = req.user.id; // Discord-ID des Benutzers
-
+    const discordId = req.user.id;
     const [userRows] = await fencesDbPool.execute(
       'SELECT id FROM users WHERE discord_id = ?',
       [discordId]
@@ -634,21 +544,18 @@ app.get('/api/bootstrap', async (req, res) => {
       return res.status(404).json({ error: 'Benutzer nicht gefunden.' });
     }
     const userId = userRows[0].id;
-
     const [bootstrapRows] = await fencesDbPool.execute(
       'SELECT fence, route, synced_at FROM bootstrap WHERE user_id = ?',
       [userId]
     );
-
     if (bootstrapRows.length === 0) {
       return res.json({});
     }
-
     const bootstrapData = bootstrapRows[0];
     res.json({
       fence: JSON.parse(bootstrapData.fence),
       route: JSON.parse(bootstrapData.route),
-      synced_at: bootstrapData.synced_at, // optional, falls du das auswerten willst
+      synced_at: bootstrapData.synced_at,
     });
   } catch (error) {
     console.error('Fehler beim Abrufen der Bootstrap-Daten:', error);
@@ -656,36 +563,29 @@ app.get('/api/bootstrap', async (req, res) => {
   }
 });
 
-// **API-Route: /api/bootstrap zum Speichern der Bootstrap-Fence und Route**
+// Bootstrap speichern
 app.post('/api/bootstrap', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({ error: 'Benutzer nicht authentifiziert.' });
   }
-
   const discordId = req.user.id;
   const { fence, route } = req.body;
-
   if (!fence || !route) {
     return res.status(400).json({ error: 'Fence und Route werden benötigt.' });
   }
-
   try {
     const [userRows] = await fencesDbPool.execute(
       'SELECT id FROM users WHERE discord_id = ?',
       [discordId]
     );
-
     if (userRows.length === 0) {
       return res.status(404).json({ error: 'Benutzer nicht gefunden.' });
     }
     const userId = userRows[0].id;
-
-    // Überprüfen, ob es bereits eine Bootstrap-Fence für den Benutzer gibt
     const [existingBootstrapRows] = await fencesDbPool.execute(
       'SELECT id FROM bootstrap WHERE user_id = ?',
       [userId]
     );
-
     if (existingBootstrapRows.length === 0) {
       await fencesDbPool.execute(
         'INSERT INTO bootstrap (user_id, fence, route, synced_at) VALUES (?, ?, ?, NOW())',
@@ -697,7 +597,6 @@ app.post('/api/bootstrap', async (req, res) => {
         [JSON.stringify(fence), JSON.stringify(route), userId]
       );
     }
-
     res.json({ success: true });
   } catch (error) {
     console.error('Fehler beim Speichern der Bootstrap-Daten:', error);
@@ -705,15 +604,13 @@ app.post('/api/bootstrap', async (req, res) => {
   }
 });
 
-// **Neuer Endpoint: Nur die Bootstrap-Route löschen**
+// Bootstrap-Route löschen
 app.delete('/api/bootstrap/route', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({ error: 'Benutzer nicht authentifiziert.' });
   }
-
   try {
     const discordId = req.user.id;
-    // User abfragen
     const [userRows] = await fencesDbPool.execute(
       'SELECT id FROM users WHERE discord_id = ?',
       [discordId]
@@ -722,13 +619,10 @@ app.delete('/api/bootstrap/route', async (req, res) => {
       return res.status(404).json({ error: 'Benutzer nicht gefunden.' });
     }
     const userId = userRows[0].id;
-
-    // Setze nur die route auf NULL, synced_at belassen (oder auch wieder auf NULL setzen, je nach Bedarf)
     await fencesDbPool.execute(
       'UPDATE bootstrap SET route = NULL WHERE user_id = ?',
       [userId]
     );
-
     return res.json({ success: true });
   } catch (error) {
     console.error('Fehler beim Löschen der Bootstrap-Route:', error);
@@ -736,100 +630,60 @@ app.delete('/api/bootstrap/route', async (req, res) => {
   }
 });
 
-// **API-Route: /api/sync zum Weiterleiten an externe API**
+// Sync-API
 app.post('/api/sync', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({ error: 'Benutzer nicht authentifiziert.' });
   }
-
   try {
-    const { actionType, name } = req.body; // Extrahiere `name` aus dem Payload
+    const { actionType, name } = req.body;
     const discordId = req.user.id;
-
     if (!name) {
       return res.status(400).json({ error: 'Name der Fence wird benötigt.' });
     }
-
-    // userId abfragen
     const [userRows] = await fencesDbPool.execute(
       'SELECT id FROM users WHERE discord_id = ?',
       [discordId]
     );
-
     if (userRows.length === 0) {
       return res.status(404).json({ error: 'Benutzer nicht gefunden.' });
     }
-
     const userId = userRows[0].id;
-    console.log(`Aktueller discordId: ${discordId}, userId: ${userId}`);
-
-    // Lösche nur die Area mit dem exakten Namen
-    console.log(
-      `Synchronisiere Area. Überprüfe und lösche vorhandene Area mit dem Namen: ${name}.`
-    );
-
-    // Suche nach Area-Bereich mit exakt passendem Namen
     const externalApiBaseUrl = process.env.EXTERNAL_API_BASE_URL || 'http://localhost:7272';
     const listResponse = await fetch(
       `${externalApiBaseUrl}/areas/?order=ASC&page=0&perPage=1000&sortBy=name`,
       { method: 'GET' }
     );
-
     if (!listResponse.ok) {
       const errorText = await listResponse.text();
-      console.error(
-        `Fehler beim Abrufen der Areas: ${listResponse.status} ${errorText}`
-      );
-      return res.status(listResponse.status).json({
-        error: `Fehler beim Abrufen der Areas: ${errorText}`,
-      });
+      console.error(`Fehler beim Abrufen der Areas: ${listResponse.status} ${errorText}`);
+      return res
+        .status(listResponse.status)
+        .json({ error: `Fehler beim Abrufen der Areas: ${errorText}` });
     }
-
     const listData = await listResponse.json();
-    console.log('Erhaltene Areas von der externen API:', listData);
-
-    // Finde die Area mit dem exakten Namen
-    const userArea = listData.data.find(
-      (area) => area.name.toString() === name
-    );
-    console.log(`Gesuchte Area mit Namen '${name}':`, userArea);
-
+    const userArea = listData.data.find((area) => area.name.toString() === name);
     if (userArea) {
-      console.log(`Versuche, Area mit ID ${userArea.id} zu löschen.`);
-      // Lösche die Area
       const deleteResponse = await fetch(
         `${externalApiBaseUrl}/areas/${userArea.id}`,
         { method: 'DELETE' }
       );
-
       if (!deleteResponse.ok) {
         const delErrorText = await deleteResponse.text();
-        console.error(
-          `Fehler beim Löschen der Area: ${deleteResponse.status} ${delErrorText}`
-        );
-        return res.status(deleteResponse.status).json({
-          error: `Fehler beim Löschen der Area: ${delErrorText}`,
-        });
+        console.error(`Fehler beim Löschen der Area: ${deleteResponse.status} ${delErrorText}`);
+        return res
+          .status(deleteResponse.status)
+          .json({ error: `Fehler beim Löschen der Area: ${delErrorText}` });
       }
-
       console.log(`Area mit ID ${userArea.id} gelöscht.`);
-    } else {
-      console.log('Keine Area gefunden, die gelöscht werden müsste.');
     }
-
-    // Update `last_sync_action`
     if (actionType) {
       await fencesDbPool.execute(
         'UPDATE users SET last_sync_action = ? WHERE discord_id = ?',
         [actionType, discordId]
       );
-      console.log(
-        `last_sync_action auf '${actionType}' gesetzt für discord_id: ${discordId}`
-      );
+      console.log(`last_sync_action auf '${actionType}' gesetzt für discord_id: ${discordId}`);
     }
-
-    // Neue Area anlegen
-    console.log('Neues Area-Objekt, das an die externe API gesendet wird:', req.body);
     const responseExternal = await fetch(`${externalApiBaseUrl}/areas/`, {
       method: 'POST',
       headers: {
@@ -838,18 +692,42 @@ app.post('/api/sync', async (req, res) => {
       },
       body: JSON.stringify(req.body),
     });
-
-    console.log(`Antwort der externen API: Status ${responseExternal.status}`);
     if (!responseExternal.ok) {
       const errorText = await responseExternal.text();
       console.error(`Fehler beim Synchronisieren: ${responseExternal.status} ${errorText}`);
-      return res.status(responseExternal.status).json({
-        error: `Fehler beim Synchronisieren: ${errorText}`,
+      return res
+        .status(responseExternal.status)
+        .json({ error: `Fehler beim Synchronisieren: ${errorText}` });
+    }
+    const responseData = await responseExternal.json();
+
+    try {
+      await fetch(`http://${process.env.GOLBAT_HOST}:${process.env.GOLBAT_PORT}/api/reload-geojson`, {
+        method: 'GET',
+        headers: { 'X-Golbat-Secret': process.env.GOLBAT_API_SECRET || '' },
       });
+    } catch (err) {
+      console.error('Fehler beim Reload Golbat:', err);
     }
 
-    const responseData = await responseExternal.json();
-    console.log('Erfolg:', responseData);
+    try {
+      await fetch(`http://${process.env.PORACLE_HOST}:${process.env.PORACLE_PORT}/api/geofence/reload`, {
+        method: 'GET',
+        headers: { 'X-Poracle-Secret': process.env.PORACLE_API_SECRET || '' },
+      });
+    } catch (err) {
+      console.error('Fehler beim Reload Poracle:', err);
+    }
+
+    try {
+      await fetch(`http://${process.env.REACTMAP_HOST}:${process.env.REACTMAP_PORT}/api/v1/area/reload`, {
+        method: 'GET',
+        headers: { 'react-map-secret': process.env.REACTMAP_API_SECRET || '' },
+      });
+    } catch (err) {
+      console.error('Fehler beim Reload ReactMap:', err);
+    }
+
     return res.json({ success: true, data: responseData });
   } catch (error) {
     console.error('Fehler bei /api/sync:', error);
@@ -859,27 +737,20 @@ app.post('/api/sync', async (req, res) => {
   }
 });
 
-// SERVERSEITIGE CRON-JOB LÖSUNG
-// Alle Minute prüfen wir, ob in "bootstrap" Einträge älter als 30 min (synced_at) sind,
-// und setzen deren route auf NULL.
+// Cron-Job
 cron.schedule('* * * * *', async () => {
   try {
-    console.log('Cron-Job läuft: Prüfe alte Bootstrap-Routen...');
-
     await fencesDbPool.execute(
       `UPDATE bootstrap
-         SET route = NULL
-         WHERE route IS NOT NULL
-           AND synced_at < (NOW() - INTERVAL 30 MINUTE)`
+       SET route = NULL
+       WHERE route IS NOT NULL
+         AND synced_at < (NOW() - INTERVAL 30 MINUTE)`
     );
-
-    console.log('Alte Bootstrap-Routen erfolgreich entfernt.');
   } catch (err) {
     console.error('Cron-Fehler beim Löschen alter Bootstrap-Routen:', err);
   }
 });
 
-// Starte den Server
 app.listen(port, process.env.SERVER_HOST || '0.0.0.0', () => {
   console.log(
     `Server läuft auf http://${process.env.SERVER_HOST || 'localhost'}:${port}`
