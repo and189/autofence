@@ -37,12 +37,11 @@ const geofenceDbConfig = {
   database: process.env.GEOFENCE_DB_NAME,
 };
 
-// Erstelle Datenbank-Pools
 const fencesDbPool = mysql.createPool(fencesDbConfig);
 const golbatDbPool = mysql.createPool(golbatDbConfig);
 const geofenceDbPool = mysql.createPool(geofenceDbConfig);
 
-// Middleware
+// Middleware Setup
 app.use(
   cors({
     origin: 'http://0.0.0.0:3005',
@@ -52,41 +51,93 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Session Middleware
 app.use(
   session({
     secret: process.env.SESSION_SECRET || 'default_secret_key',
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: false,
+      secure: false, // Set to true if using HTTPS
       httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000,
+      maxAge: 24 * 60 * 60 * 1000, // 1 Tag
     },
   })
 );
 
-// Passport-Konfiguration
 passport.serializeUser((user, done) => {
   done(null, user);
 });
-
 passport.deserializeUser((obj, done) => {
   done(null, obj);
 });
 
-// Discord OAuth2 Strategien
+// Funktion zum Löschen der Geofences eines Benutzers
+async function deleteUserFences(discordId) {
+  try {
+    // Finden des Benutzers in der Datenbank
+    const [userRows] = await fencesDbPool.execute(
+      'SELECT id FROM users WHERE discord_id = ?',
+      [discordId]
+    );
+    if (userRows.length === 0) {
+      console.log(`Benutzer mit Discord-ID ${discordId} nicht gefunden.`);
+      return;
+    }
+    const userId = userRows[0].id;
+
+    // Finden aller Geofences des Benutzers
+    const [fenceRows] = await geofenceDbPool.execute(
+      `SELECT g.id
+       FROM geofence g
+       JOIN geofence_project gp ON g.id = gp.geofence_id
+       JOIN project p ON gp.project_id = p.id
+       WHERE p.name = ?`,
+      [discordId.toString()]
+    );
+
+    // Löschen jeder einzelnen Geofence
+    for (const fence of fenceRows) {
+      const fenceId = fence.id;
+
+      // Löschen aus geofence_project
+      await geofenceDbPool.execute(
+        'DELETE FROM geofence_project WHERE geofence_id = ?',
+        [fenceId]
+      );
+
+      // Löschen aus geofence_property
+      await geofenceDbPool.execute(
+        'DELETE FROM geofence_property WHERE geofence_id = ?',
+        [fenceId]
+      );
+
+      // Löschen aus geofence
+      await geofenceDbPool.execute(
+        'DELETE FROM geofence WHERE id = ?',
+        [fenceId]
+      );
+
+      console.log(`Geofence mit ID ${fenceId} für Benutzer ${discordId} gelöscht.`);
+    }
+  } catch (error) {
+    console.error('Fehler beim Löschen der Geofences des Benutzers:', error);
+  }
+}
+
+// Discord-Strategie mit Rollenüberprüfung
 passport.use(
   new DiscordStrategy(
     {
       clientID: process.env.DISCORD_CLIENT_ID,
       clientSecret: process.env.DISCORD_CLIENT_SECRET,
       callbackURL: process.env.DISCORD_REDIRECT_URI,
-      scope: ['identify', 'email'],
+      scope: ['identify', 'email', 'guilds', 'guilds.members.read'],
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
         const { id, username, email } = profile;
+
+        // Überprüfen, ob der Benutzer in der Datenbank existiert, andernfalls hinzufügen
         const [rows] = await fencesDbPool.execute(
           'SELECT id FROM users WHERE discord_id = ?',
           [id]
@@ -98,6 +149,32 @@ passport.use(
           );
           console.log(`Neuer Benutzer angelegt mit ID: ${result.insertId}`);
         }
+
+        // Überprüfen der Benutzerrolle in der spezifischen Guild
+        const guildId = process.env.DISCORD_GUILD_ID; // Die ID der Guild, die Sie überprüfen möchten
+        const requiredRoleId = process.env.DISCORD_REQUIRED_ROLE_ID; // Die ID der erforderlichen Rolle
+
+        // Abrufen der Guild-Mitgliedsinformationen
+        const memberResponse = await fetch(`https://discord.com/api/guilds/${guildId}/members/${id}`, {
+          headers: {
+            Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}`, // Verwenden Sie einen Bot-Token mit den erforderlichen Berechtigungen
+          },
+        });
+
+        if (!memberResponse.ok) {
+          throw new Error('Fehler beim Abrufen der Guild-Mitgliedsinformationen');
+        }
+
+        const memberData = await memberResponse.json();
+        const userRoles = memberData.roles; // Array von Rollen-IDs
+
+        if (!userRoles.includes(requiredRoleId)) {
+          // Benutzer hat die erforderliche Rolle nicht
+          // Geofences löschen
+          await deleteUserFences(id);
+          return done(null, false, { message: 'Benutzer hat nicht die erforderliche Rolle.' });
+        }
+
         done(null, profile);
       } catch (err) {
         console.error('Fehler bei der Benutzerregistrierung:', err);
@@ -110,18 +187,26 @@ passport.use(
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Authentifizieren mit Discord
+// Routen
+
+// Authentifizierung starten
 app.get('/auth/discord', passport.authenticate('discord'));
 
-// Callback-Route für Discord
+// Authentifizierung Callback
 app.get(
   '/auth/discord/callback',
-  passport.authenticate('discord', { failureRedirect: '/' }),
+  passport.authenticate('discord', { failureRedirect: '/unauthorized' }),
   (req, res) => {
     res.redirect('http://164.68.105.51:3005');
   }
 );
 
+// Route für nicht autorisierte Benutzer
+app.get('/unauthorized', (req, res) => {
+  res.status(403).send('Sie besitzen nicht die erforderliche Rolle, um auf diese Anwendung zuzugreifen.');
+});
+
+// Benutzerinformationen abrufen
 app.get('/api/user', async (req, res) => {
   if (req.isAuthenticated()) {
     try {
@@ -154,7 +239,7 @@ app.get('/api/user', async (req, res) => {
   }
 });
 
-// Fences abrufen
+// Alle Fences eines Benutzers abrufen
 app.get('/api/fences', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({
@@ -208,7 +293,7 @@ app.get('/api/fences', async (req, res) => {
   }
 });
 
-// Fences zählen
+// Anzahl der Fences eines Benutzers abrufen
 app.get('/api/fences/count', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({
@@ -242,7 +327,7 @@ app.get('/api/fences/count', async (req, res) => {
   }
 });
 
-// Fences eines Projekts abrufen
+// Fences nach Projekt abrufen
 app.get('/api/fences/by-project/:projectId', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({
@@ -435,9 +520,7 @@ app.put('/api/fences/:id', async (req, res) => {
       [discordId.toString()]
     );
     if (userProjectIdQuery[0].length === 0) {
-      return res
-        .status(404)
-        .json({ error: 'Benutzerprojekt nicht gefunden.' });
+      return res.status(404).json({ error: 'Benutzerprojekt nicht gefunden.' });
     }
     const userProjectId = userProjectIdQuery[0][0].id;
     const [fenceRows] = await geofenceDbPool.execute(
@@ -485,6 +568,44 @@ app.put('/api/fences/:id', async (req, res) => {
         );
       }
     }
+
+    const [fenceNameRows] = await geofenceDbPool.execute(
+      'SELECT name FROM geofence WHERE id = ?',
+      [fenceId]
+    );
+    if (fenceNameRows.length > 0) {
+      const currentFenceName = fenceNameRows[0].name;
+      const areaName = `${discordId.toString()}_${currentFenceName}`;
+      const externalApiBaseUrl = process.env.EXTERNAL_API_BASE_URL || 'http://localhost:7272';
+
+      try {
+        const listResponse = await fetch(
+          `${externalApiBaseUrl}/areas/?order=ASC&page=0&perPage=1000&sortBy=name`,
+          { method: 'GET' }
+        );
+        if (listResponse.ok) {
+          const listData = await listResponse.json();
+          const userArea = listData.data.find(
+            (area) => area.name.toString() === areaName
+          );
+          if (userArea) {
+            const deleteResponse = await fetch(
+              `${externalApiBaseUrl}/areas/${userArea.id}`,
+              { method: 'DELETE' }
+            );
+            if (!deleteResponse.ok) {
+              const delErrorText = await deleteResponse.text();
+              console.error(
+                `Fehler beim Löschen der Area: ${deleteResponse.status} ${delErrorText}`
+              );
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Fehler beim Löschen der externen Area:', err);
+      }
+    }
+
     res.json({ success: true });
   } catch (error) {
     console.error('Fehler beim Aktualisieren der Fence:', error);
@@ -492,7 +613,124 @@ app.put('/api/fences/:id', async (req, res) => {
   }
 });
 
-// Spawnpoints
+// Fence löschen
+app.delete('/api/fences/:id', async (req, res) => {
+  if (!req.isAuthenticated()) {
+    return res.status(401).json({ error: 'Benutzer nicht authentifiziert.' });
+  }
+  const discordId = req.user.id;
+  const fenceId = req.params.id;
+  try {
+    const [userRows] = await fencesDbPool.execute(
+      'SELECT id FROM users WHERE discord_id = ?',
+      [discordId]
+    );
+    if (userRows.length === 0) {
+      return res.status(404).json({ error: 'Benutzer nicht gefunden.' });
+    }
+    const userProjectIdQuery = await geofenceDbPool.execute(
+      'SELECT id FROM project WHERE name = ?',
+      [discordId.toString()]
+    );
+    if (userProjectIdQuery[0].length === 0) {
+      return res.status(404).json({ error: 'Benutzerprojekt nicht gefunden.' });
+    }
+    const userProjectId = userProjectIdQuery[0][0].id;
+    const [fenceRows] = await geofenceDbPool.execute(
+      `SELECT g.id, g.name
+       FROM geofence g
+       JOIN geofence_project gp ON g.id = gp.geofence_id
+       WHERE g.id = ? AND gp.project_id = ?`,
+      [fenceId, userProjectId]
+    );
+    if (fenceRows.length === 0) {
+      return res
+        .status(404)
+        .json({ error: 'Fence nicht gefunden oder gehört nicht dem Benutzer.' });
+    }
+
+    const fenceName = fenceRows[0].name;
+    const areaName = `${discordId.toString()}_${fenceName}`;
+    const externalApiBaseUrl = process.env.EXTERNAL_API_BASE_URL || 'http://localhost:7272';
+
+    try {
+      const listResponse = await fetch(
+        `${externalApiBaseUrl}/areas/?order=ASC&page=0&perPage=1000&sortBy=name`,
+        { method: 'GET' }
+      );
+      if (listResponse.ok) {
+        const listData = await listResponse.json();
+        const userArea = listData.data.find(
+          (area) => area.name.toString() === areaName
+        );
+        if (userArea) {
+          const deleteResponse = await fetch(
+            `${externalApiBaseUrl}/areas/${userArea.id}`,
+            { method: 'DELETE' }
+          );
+          if (!deleteResponse.ok) {
+            const delErrorText = await deleteResponse.text();
+            console.error(
+              `Fehler beim Löschen der Area: ${deleteResponse.status} ${delErrorText}`
+            );
+            return res
+              .status(deleteResponse.status)
+              .json({
+                error: `Fehler beim Löschen der externen Area: ${delErrorText}`,
+              });
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Fehler beim Löschen der externen Area:', err);
+    }
+
+    await geofenceDbPool.execute(
+      'DELETE FROM geofence_project WHERE geofence_id = ?',
+      [fenceId]
+    );
+    await geofenceDbPool.execute(
+      'DELETE FROM geofence_property WHERE geofence_id = ?',
+      [fenceId]
+    );
+    await geofenceDbPool.execute('DELETE FROM geofence WHERE id = ?', [fenceId]);
+
+    // Reload externe Dienste
+    try {
+      await fetch(`http://${process.env.GOLBAT_HOST}:${process.env.GOLBAT_PORT}/api/reload-geojson`, {
+        method: 'GET',
+        headers: { 'X-Golbat-Secret': process.env.GOLBAT_API_SECRET || '' },
+      });
+    } catch (err) {
+      console.error('Fehler beim Reload Golbat:', err);
+    }
+
+    try {
+      await fetch(`http://${process.env.PORACLE_HOST}:${process.env.PORACLE_PORT}/api/geofence/reload`, {
+        method: 'GET',
+        headers: { 'X-Poracle-Secret': process.env.PORACLE_API_SECRET || '' },
+      });
+    } catch (err) {
+      console.error('Fehler beim Reload Poracle:', err);
+    }
+
+    try {
+      await fetch(`http://${process.env.REACTMAP_HOST}:${process.env.REACTMAP_PORT}/api/v1/area/reload`, {
+        method: 'GET',
+        headers: { 'react-map-secret': process.env.REACTMAP_API_SECRET || '' },
+      });
+    } catch (err) {
+      console.error('Fehler beim Reload ReactMap:', err);
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Fehler beim Löschen der Fence:', error);
+    res.status(500).json({ error: 'Fehler beim Löschen der Fence' });
+  }
+});
+
+// Spawnpoints abrufen
 app.get('/api/spawnpoints', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res
@@ -527,7 +765,7 @@ app.get('/api/spawnpoints', async (req, res) => {
   }
 });
 
-// Bootstrap abrufen
+// Bootstrap-Daten abrufen
 app.get('/api/bootstrap', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res
@@ -545,7 +783,7 @@ app.get('/api/bootstrap', async (req, res) => {
     }
     const userId = userRows[0].id;
     const [bootstrapRows] = await fencesDbPool.execute(
-      'SELECT fence, route, synced_at FROM bootstrap WHERE user_id = ?',
+      'SELECT id, fence, route, synced_at FROM bootstrap WHERE user_id = ?',
       [userId]
     );
     if (bootstrapRows.length === 0) {
@@ -563,7 +801,7 @@ app.get('/api/bootstrap', async (req, res) => {
   }
 });
 
-// Bootstrap speichern
+// Bootstrap-Daten speichern
 app.post('/api/bootstrap', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({ error: 'Benutzer nicht authentifiziert.' });
@@ -630,7 +868,7 @@ app.delete('/api/bootstrap/route', async (req, res) => {
   }
 });
 
-// Sync-API
+// Synchronisieren der Geofences
 app.post('/api/sync', async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).json({ error: 'Benutzer nicht authentifiziert.' });
@@ -701,6 +939,7 @@ app.post('/api/sync', async (req, res) => {
     }
     const responseData = await responseExternal.json();
 
+    // Reload externe Dienste
     try {
       await fetch(`http://${process.env.GOLBAT_HOST}:${process.env.GOLBAT_PORT}/api/reload-geojson`, {
         method: 'GET',
@@ -737,20 +976,85 @@ app.post('/api/sync', async (req, res) => {
   }
 });
 
-// Cron-Job
+// Cron-Job zum Löschen alter Bootstrap-Routen
 cron.schedule('* * * * *', async () => {
   try {
-    await fencesDbPool.execute(
-      `UPDATE bootstrap
-       SET route = NULL
-       WHERE route IS NOT NULL
-         AND synced_at < (NOW() - INTERVAL 30 MINUTE)`
+    const [expiredRows] = await fencesDbPool.execute(
+      `SELECT b.id, b.user_id, b.fence, b.synced_at, u.discord_id
+       FROM bootstrap b
+       JOIN users u ON b.user_id = u.id
+       WHERE b.synced_at < (NOW() - INTERVAL 30 MINUTE)`
     );
+    for (const row of expiredRows) {
+      const externalApiBaseUrl = process.env.EXTERNAL_API_BASE_URL || 'http://localhost:7272';
+      let fenceName = 'UnnamedFence';
+      try {
+        const fenceObj = JSON.parse(row.fence);
+        if (fenceObj && fenceObj.properties && fenceObj.properties.name) {
+          fenceName = fenceObj.properties.name;
+        }
+      } catch (err) {}
+
+      const areaName = `${row.discord_id}_${fenceName}`;
+      try {
+        const listResponse = await fetch(
+          `${externalApiBaseUrl}/areas/?order=ASC&page=0&perPage=1000&sortBy=name`,
+          { method: 'GET' }
+        );
+        if (listResponse.ok) {
+          const listData = await listResponse.json();
+          const userArea = listData.data.find((area) => area.name.toString() === areaName);
+          if (userArea) {
+            const deleteResponse = await fetch(
+              `${externalApiBaseUrl}/areas/${userArea.id}`,
+              { method: 'DELETE' }
+            );
+            if (!deleteResponse.ok) {
+              const delErrorText = await deleteResponse.text();
+              console.error(
+                `Fehler beim Löschen der externen Bootstrap-Area: ${deleteResponse.status} ${delErrorText}`
+              );
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Fehler beim Löschen der externen Bootstrap-Area:', err);
+      }
+      await fencesDbPool.execute('DELETE FROM bootstrap WHERE id = ?', [row.id]);
+    }
+    if (expiredRows.length > 0) {
+      // Reload externe Dienste, falls Routen gelöscht wurden
+      try {
+        await fetch(`http://${process.env.GOLBAT_HOST}:${process.env.GOLBAT_PORT}/api/reload-geojson`, {
+          method: 'GET',
+          headers: { 'X-Golbat-Secret': process.env.GOLBAT_API_SECRET || '' },
+        });
+      } catch (err) {
+        console.error('Fehler beim Reload Golbat:', err);
+      }
+      try {
+        await fetch(`http://${process.env.PORACLE_HOST}:${process.env.PORACLE_PORT}/api/geofence/reload`, {
+          method: 'GET',
+          headers: { 'X-Poracle-Secret': process.env.PORACLE_API_SECRET || '' },
+        });
+      } catch (err) {
+        console.error('Fehler beim Reload Poracle:', err);
+      }
+      try {
+        await fetch(`http://${process.env.REACTMAP_HOST}:${process.env.REACTMAP_PORT}/api/v1/area/reload`, {
+          method: 'GET',
+          headers: { 'react-map-secret': process.env.REACTMAP_API_SECRET || '' },
+        });
+      } catch (err) {
+        console.error('Fehler beim Reload ReactMap:', err);
+      }
+    }
   } catch (err) {
     console.error('Cron-Fehler beim Löschen alter Bootstrap-Routen:', err);
   }
 });
 
+// Starten des Servers
 app.listen(port, process.env.SERVER_HOST || '0.0.0.0', () => {
   console.log(
     `Server läuft auf http://${process.env.SERVER_HOST || 'localhost'}:${port}`
